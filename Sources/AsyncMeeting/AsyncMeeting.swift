@@ -1,11 +1,11 @@
 import Foundation
-import Synchronization
+import os
 
 /// A type that sychronises two async callers via the rendezvous pattern. Optionally allows work to
 /// be performed during the suspension of both tasks.
-@available(macOS 15.0, *)
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 final class AsyncMeeting: Sendable {
-    private let continuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
+    private let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?> = OSAllocatedUnfairLock(initialState: nil)
 
     /// Suspends a Task by waiting for a another task to rendezvous. After the two tasks
     /// complete the rendezvous, both tasks resume.

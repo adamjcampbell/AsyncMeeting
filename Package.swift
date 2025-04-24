@@ -4,9 +4,6 @@ import PackageDescription
 
 let package = Package(
     name: "AsyncMeeting",
-    platforms: [
-        .macOS(.v15),
-    ],
     products: [
         .library(
             name: "AsyncMeeting",
