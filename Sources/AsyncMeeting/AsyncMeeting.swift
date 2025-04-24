@@ -4,14 +4,18 @@ import os
 /// A type that sychronises two async callers via the rendezvous pattern. Optionally allows work to
 /// be performed during the suspension of both tasks.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
-final class AsyncMeeting: Sendable {
-    private let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?> = OSAllocatedUnfairLock(initialState: nil)
+public final class AsyncMeeting: Sendable {
+    private let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>
+
+    public init() {
+        continuation = .init(initialState: nil)
+    }
 
     /// Suspends a Task by waiting for a another task to rendezvous. After the two tasks
     /// complete the rendezvous, both tasks resume.
     ///
     /// Closureless version of `rendezvous`. See: ``rendezvous(_:)`` for more information
-    func rendezvous() async {
+    public func rendezvous() async {
         await rendezvous {}
     }
 
@@ -29,7 +33,7 @@ final class AsyncMeeting: Sendable {
     /// - Parameters:
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
-    func rendezvous<T: Sendable>(_ perform: @Sendable () async throws -> T) async throws -> T {
+    public func rendezvous<T: Sendable>(_ perform: @Sendable () async throws -> T) async throws -> T {
         try await rendezvous { () -> Result<T, any Error> in
             do {
                 return .success(try await perform())
@@ -52,7 +56,7 @@ final class AsyncMeeting: Sendable {
     /// - Parameters:
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
-    func rendezvous<T: Sendable>(_ perform: @Sendable () async -> T) async -> T {
+    public func rendezvous<T: Sendable>(_ perform: @Sendable () async -> T) async -> T {
         await resumeWithPeer()
         let result = await perform()
         await resumeWithPeer()
