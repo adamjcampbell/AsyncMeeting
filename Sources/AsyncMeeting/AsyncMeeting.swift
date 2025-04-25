@@ -5,18 +5,21 @@ import os
 /// be performed during the suspension of both tasks.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class AsyncMeeting: Sendable {
-    private let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>
+    let peerCount: OSAllocatedUnfairLock<UInt> = .init(initialState: 0)
+    let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?> = .init(initialState: nil)
 
-    public init() {
-        continuation = .init(initialState: nil)
+    public struct TooManyPeersError: Error {
+        public init() {}
     }
+
+    public init() {}
 
     /// Suspends a Task by waiting for a another task to rendezvous. After the two tasks
     /// complete the rendezvous, both tasks resume.
     ///
     /// Closureless version of `rendezvous`. See: ``rendezvous(_:)`` for more information
-    public func rendezvous() async {
-        await rendezvous {}
+    public func rendezvous() async throws {
+        try await rendezvous {}
     }
 
     /// Suspends a Task by waiting for a another task to rendezvous. Runs the provided
@@ -56,7 +59,17 @@ public final class AsyncMeeting: Sendable {
     /// - Parameters:
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
-    public func rendezvous<T: Sendable>(_ perform: @Sendable () async -> T) async -> T {
+    public func rendezvous<T: Sendable>(_ perform: @Sendable () async -> T) async throws -> T {
+        defer { peerCount.withLock { $0 -= 1 } }
+
+        try peerCount.withLock { peerCount in
+            guard peerCount <= 1 else {
+                throw TooManyPeersError()
+            }
+
+            peerCount += 1
+        }
+
         await resumeWithPeer()
         let result = await perform()
         await resumeWithPeer()

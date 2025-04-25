@@ -11,39 +11,39 @@ struct AsyncMeetingTests {
     }
 
     @Test("Test a rendezvous with no work performed")
-    func testRendezvousNoWorkPerformed() async {
+    func testRendezvousNoWorkPerformed() async throws {
         let actor = TestActor()
         let meeting = AsyncMeeting()
 
         let task = Task {
-            await meeting.rendezvous()
+            try await meeting.rendezvous()
             await actor.increment()
         }
 
         await #expect(actor.testInt == 0)
 
-        await meeting.rendezvous()
-        await task.value
+        try await meeting.rendezvous()
+        try await task.value
 
         await #expect(actor.testInt == 1)
     }
 
     @Test("Test rendezvous with work performed")
-    func testRendezvousWorkPerformed() async {
+    func testRendezvousWorkPerformed() async throws {
         let actor = TestActor()
         let meeting = AsyncMeeting()
 
         let task = Task {
-            await meeting.rendezvous {
+            try await meeting.rendezvous {
                 await actor.increment()
             }
         }
 
         await #expect(actor.testInt == 0)
 
-        await meeting.rendezvous()
+        try await meeting.rendezvous()
         await #expect(actor.testInt == 1)
 
-        await task.value
+        try await task.value
     }
 }
