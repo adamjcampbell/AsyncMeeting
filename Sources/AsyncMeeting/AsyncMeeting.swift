@@ -5,14 +5,22 @@ import os
 /// be performed during the suspension of both tasks.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class AsyncMeeting: Sendable {
-    let peerCount: OSAllocatedUnfairLock<UInt> = .init(initialState: 0)
-    let continuation: OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?> = .init(initialState: nil)
+    let state: OSAllocatedUnfairLock<State> = .init(initialState: .init())
+    let timeoutDuration: Duration?
 
-    public struct TooManyPeersError: Error {
-        public init() {}
+    struct State {
+        var peerCount: UInt = 0
+        var continuation: CheckedContinuation<Void, Never>?
     }
 
-    public init() {}
+    public enum MeetingError: Error {
+        case timeout
+        case peerCountExceeded
+    }
+
+    public init(timeout timeoutDuration: Duration? = nil) {
+        self.timeoutDuration = timeoutDuration
+    }
 
     /// Suspends a Task by waiting for a another task to rendezvous. After the two tasks
     /// complete the rendezvous, both tasks resume.
@@ -36,7 +44,7 @@ public final class AsyncMeeting: Sendable {
     /// - Parameters:
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
-    public func rendezvous<T: Sendable>(_ perform: @Sendable () async throws -> T) async throws -> T {
+    public func rendezvous<T: Sendable>(_ perform: @escaping @Sendable () async throws -> T) async throws -> T {
         try await rendezvous { () -> Result<T, any Error> in
             do {
                 return .success(try await perform())
@@ -59,20 +67,35 @@ public final class AsyncMeeting: Sendable {
     /// - Parameters:
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
-    public func rendezvous<T: Sendable>(_ perform: @Sendable () async -> T) async throws -> T {
-        defer { peerCount.withLock { $0 -= 1 } }
+    public func rendezvous<T: Sendable>(_ perform: @escaping @Sendable () async -> T) async throws -> T {
+        defer { state.withLock { $0.peerCount -= 1 } }
 
-        try peerCount.withLock { peerCount in
-            guard peerCount <= 1 else {
-                throw TooManyPeersError()
+        try state.withLock { state in
+            guard state.peerCount <= 1 else {
+                throw MeetingError.peerCountExceeded
             }
 
-            peerCount += 1
+            state.peerCount += 1
         }
 
-        await resumeWithPeer()
-        let result = await perform()
-        await resumeWithPeer()
+        let result = try await withThrowingTaskGroup { group in
+            group.addTask {
+                await self.resumeWithPeer()
+                let result = await perform()
+                await self.resumeWithPeer()
+                return result
+            }
+
+            if let timeoutDuration {
+                group.addTask {
+                    try await Task.sleep(for: timeoutDuration)
+                    throw MeetingError.timeout
+                }
+            }
+
+            return try await group.next()!
+        }
+
         return result
     }
 
@@ -81,18 +104,23 @@ public final class AsyncMeeting: Sendable {
     private func resumeWithPeer() async {
         await withTaskCancellationHandler {
             await withCheckedContinuation { newContinuation in
-                continuation.withLock { peerContinuation in
-                    if Task.isCancelled || peerContinuation != nil {
-                        peerContinuation?.resume()
-                        peerContinuation = nil
+                state.withLock { state in
+                    if Task.isCancelled || state.continuation != nil {
+                        state.continuation?.resume()
+                        state.continuation = nil
                         newContinuation.resume()
                     } else {
-                        peerContinuation = newContinuation
+                        state.continuation = newContinuation
                     }
                 }
             }
         } onCancel: {
-            continuation.withLock { $0?.resume() }
+            state.withLock { state in
+                if let continuation = state.continuation {
+                    state.continuation = nil
+                    continuation.resume()
+                }
+            }
         }
     }
 }

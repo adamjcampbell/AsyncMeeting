@@ -46,4 +46,13 @@ struct AsyncMeetingTests {
 
         try await task.value
     }
+
+    @Test("Timeout")
+    func testTimeout() async throws {
+        let meeting = AsyncMeeting(timeout: .nanoseconds(1))
+
+        await #expect(throws: AsyncMeeting.MeetingError.timeout) {
+            try await meeting.rendezvous()
+        }
+    }
 }
