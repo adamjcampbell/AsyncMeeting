@@ -12,44 +12,60 @@ struct AsyncMeetingTests {
     }
 
     @Test("Test a rendezvous with no work performed")
-    func testRendezvousNoWorkPerformed() async throws {
-        let actor = TestActor()
-        let meeting = AsyncMeeting()
+    func rendezvousWithNoPerform() async throws {
+        try await withMainSerialExecutor {
+            let actor = TestActor()
+            let meeting = AsyncMeeting()
 
-        let task = Task {
+            let task = Task {
+                try await meeting.rendezvous()
+                await actor.increment()
+            }
+
+            await Task.megaYield()
+
+            meeting.state.withLock { state in
+                #expect(state.continuation != nil)
+            }
+
+            await #expect(actor.testInt == 0)
+
             try await meeting.rendezvous()
-            await actor.increment()
+            try await task.value
+
+            await #expect(actor.testInt == 1)
         }
-
-        await #expect(actor.testInt == 0)
-
-        try await meeting.rendezvous()
-        try await task.value
-
-        await #expect(actor.testInt == 1)
     }
 
     @Test("Test rendezvous with work performed")
-    func testRendezvousWorkPerformed() async throws {
-        let actor = TestActor()
-        let meeting = AsyncMeeting()
+    func rendezvousWithPerform() async throws {
+        try await withMainSerialExecutor {
+            let actor = TestActor()
+            let meeting = AsyncMeeting()
 
-        let task = Task {
-            try await meeting.rendezvous {
-                await actor.increment()
+            let task = Task {
+                try await meeting.rendezvous {
+                    await actor.increment()
+                }
             }
+
+            await Task.megaYield()
+
+            meeting.state.withLock { state in
+                #expect(state.continuation != nil)
+            }
+
+            await #expect(actor.testInt == 0)
+
+            try await meeting.rendezvous()
+            await #expect(actor.testInt == 1)
+
+            try await task.value
         }
-
-        await #expect(actor.testInt == 0)
-
-        try await meeting.rendezvous()
-        await #expect(actor.testInt == 1)
-
-        try await task.value
     }
 
-    @Test("Timeout")
-    func timeout() async throws {
+    @Test("Test timeout error is thrown")
+    func timeout() async {
         let meeting = AsyncMeeting(timeout: .nanoseconds(1))
 
         await #expect(throws: AsyncMeeting.MeetingError.timeout) {
@@ -57,8 +73,8 @@ struct AsyncMeetingTests {
         }
     }
 
-    @Test("Cancellation without a continuation set")
-    func cancellationWithNoContinuationSet() async throws {
+    @Test("Test cancellation is thrown without a continuation")
+    func cancellationWithNoContinuationSet() async {
         await withMainSerialExecutor {
             let meeting = AsyncMeeting()
 
@@ -76,14 +92,13 @@ struct AsyncMeetingTests {
         }
     }
 
-    @Test("Cancellation with a continuation set")
-    func cancellationWithContinuationSet() async throws {
+    @Test("Test cancellation is thrown with a continuation")
+    func cancellationWithContinuationSet() async {
         await withMainSerialExecutor {
             let meeting = AsyncMeeting()
 
             let task = Task { try await meeting.rendezvous() }
 
-            // Ensure all work is performed
             await Task.megaYield()
 
             meeting.state.withLock { state in
@@ -95,6 +110,32 @@ struct AsyncMeetingTests {
             await #expect(throws: CancellationError.self) {
                 try await task.value
             }
+
+            meeting.state.withLock { state in
+                #expect(state.continuation == nil)
+            }
+        }
+    }
+
+    @Test("Peer count exceeded error")
+    func peerCountExceeded() async throws {
+        try await withMainSerialExecutor {
+            let meeting = AsyncMeeting()
+
+            let task1 = Task {
+                try await meeting.rendezvous { await Task.yield() }
+            }
+            let task2 = Task {
+                try await meeting.rendezvous { await Task.yield() }
+            }
+
+            await #expect(throws: AsyncMeeting.MeetingError.peerCountExceeded) {
+                try await meeting.rendezvous()
+            }
+
+            await Task.megaYield()
+            try await task1.value
+            try await task2.value
         }
     }
 }

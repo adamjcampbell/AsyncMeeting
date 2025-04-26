@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// A type that sychronises two async callers via the rendezvous pattern. Optionally allows work to
-/// be performed during the suspension of both tasks.
+/// be performed during the suspension of both tasks. Supports a timeout.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)
 public final class AsyncMeeting: Sendable {
     let state: OSAllocatedUnfairLock<State> = .init(initialState: .init())
@@ -18,6 +18,9 @@ public final class AsyncMeeting: Sendable {
         case peerCountExceeded
     }
 
+    /// Initialises an async meeting of two async callers.
+    /// - Parameter timeoutDuration: How long to wait before throwing
+    /// a timeout error. If `nil` is passed the wait is indefinite.
     public init(timeout timeoutDuration: Duration? = nil) {
         self.timeoutDuration = timeoutDuration
     }
@@ -68,9 +71,6 @@ public final class AsyncMeeting: Sendable {
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
     public func rendezvous<T: Sendable>(_ perform: @escaping @Sendable () async -> T) async throws -> T {
-        // Decrement the peer count on exit
-        defer { state.withLock { $0.peerCount -= 1 } }
-
         // Ensure we only have at most one other peer already active
         // before incrementing the peer count
         try state.withLock { state in
@@ -80,6 +80,10 @@ public final class AsyncMeeting: Sendable {
 
             state.peerCount += 1
         }
+
+        // Given the peer count has been incremented,
+        // decrement the peer count on exit
+        defer { state.withLock { $0.peerCount -= 1 } }
 
         // Use a task group in order to race our main task against
         // a timeout task
