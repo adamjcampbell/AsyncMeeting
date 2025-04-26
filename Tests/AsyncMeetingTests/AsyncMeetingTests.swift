@@ -1,5 +1,6 @@
+@testable import AsyncMeeting
+import ConcurrencyExtras
 import Testing
-import AsyncMeeting
 
 struct AsyncMeetingTests {
     actor TestActor {
@@ -48,11 +49,52 @@ struct AsyncMeetingTests {
     }
 
     @Test("Timeout")
-    func testTimeout() async throws {
+    func timeout() async throws {
         let meeting = AsyncMeeting(timeout: .nanoseconds(1))
 
         await #expect(throws: AsyncMeeting.MeetingError.timeout) {
             try await meeting.rendezvous()
+        }
+    }
+
+    @Test("Cancellation without a continuation set")
+    func cancellationWithNoContinuationSet() async throws {
+        await withMainSerialExecutor {
+            let meeting = AsyncMeeting()
+
+            let task = Task { try await meeting.rendezvous() }
+
+            meeting.state.withLock { state in
+                #expect(state.continuation == nil)
+            }
+
+            task.cancel()
+
+            await #expect(throws: CancellationError.self) {
+                try await task.value
+            }
+        }
+    }
+
+    @Test("Cancellation with a continuation set")
+    func cancellationWithContinuationSet() async throws {
+        await withMainSerialExecutor {
+            let meeting = AsyncMeeting()
+
+            let task = Task { try await meeting.rendezvous() }
+
+            // Ensure all work is performed
+            await Task.megaYield()
+
+            meeting.state.withLock { state in
+                #expect(state.continuation != nil)
+            }
+
+            task.cancel()
+
+            await #expect(throws: CancellationError.self) {
+                try await task.value
+            }
         }
     }
 }

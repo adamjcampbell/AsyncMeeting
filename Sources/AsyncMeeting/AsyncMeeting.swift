@@ -10,7 +10,7 @@ public final class AsyncMeeting: Sendable {
 
     struct State {
         var peerCount: UInt = 0
-        var continuation: CheckedContinuation<Void, Never>?
+        var continuation: CheckedContinuation<Void, any Error>?
     }
 
     public enum MeetingError: Error {
@@ -68,8 +68,11 @@ public final class AsyncMeeting: Sendable {
     ///   - perform: A closure to perform during the rendezvous (while both
     ///   tasks are suspended).
     public func rendezvous<T: Sendable>(_ perform: @escaping @Sendable () async -> T) async throws -> T {
+        // Decrement the peer count on exit
         defer { state.withLock { $0.peerCount -= 1 } }
 
+        // Ensure we only have at most one other peer already active
+        // before incrementing the peer count
         try state.withLock { state in
             guard state.peerCount <= 1 else {
                 throw MeetingError.peerCountExceeded
@@ -78,21 +81,35 @@ public final class AsyncMeeting: Sendable {
             state.peerCount += 1
         }
 
+        // Use a task group in order to race our main task against
+        // a timeout task
         let result = try await withThrowingTaskGroup { group in
+            // Main rendezvous task
             group.addTask {
-                await self.resumeWithPeer()
+                // Wait for both peers to synchronise
+                try await self.resumeWithPeer()
+                // Both peers perform work
                 let result = await perform()
-                await self.resumeWithPeer()
+                // Wait for both peers to synchronise
+                // after the performed work
+                try await self.resumeWithPeer()
+                // Return any work back to the caller
                 return result
             }
 
+            // If we have a timeout add the racing timeout task
             if let timeoutDuration {
+                // Sleep for the timeout duration or
+                // complete the task group with an error
                 group.addTask {
                     try await Task.sleep(for: timeoutDuration)
                     throw MeetingError.timeout
                 }
             }
 
+            // We only care about the next result from the main
+            // task. Nil is not an issue here as it is only returned
+            // if no tasks are added. Hence the !
             return try await group.next()!
         }
 
@@ -101,24 +118,40 @@ public final class AsyncMeeting: Sendable {
 
     /// Suspends the caller until a second (peer) caller also suspends, after
     /// which both will resume.
-    private func resumeWithPeer() async {
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { newContinuation in
+    private func resumeWithPeer() async throws {
+        // Respond to cancellation
+        try await withTaskCancellationHandler {
+            // Create a continuation
+            try await withCheckedThrowingContinuation { continuation in
+                // Aquire a lock on internal state
                 state.withLock { state in
-                    if Task.isCancelled || state.continuation != nil {
-                        state.continuation?.resume()
-                        state.continuation = nil
-                        newContinuation.resume()
-                    } else {
-                        state.continuation = newContinuation
+                    do {
+                        // Check that we haven't already been cancelled
+                        try Task.checkCancellation()
+
+                        // If we have a stored continuation, clear it and
+                        // resume both tasks. Else store the contination
+                        if let storedContinuation = state.continuation {
+                            state.continuation = nil
+                            storedContinuation.resume()
+                            continuation.resume()
+                        } else {
+                            state.continuation = continuation
+                        }
+                    } catch {
+                        // Report any errors (cancellation) to the caller
+                        continuation.resume(throwing: error)
                     }
                 }
             }
         } onCancel: {
+            // On cancellation aquire a lock on the state, if we have a
+            // stored cancellation: clear it and propagate the cancellation
+            // as an error
             state.withLock { state in
                 if let continuation = state.continuation {
                     state.continuation = nil
-                    continuation.resume()
+                    continuation.resume(throwing: CancellationError())
                 }
             }
         }
