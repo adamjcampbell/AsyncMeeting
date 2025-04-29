@@ -123,41 +123,45 @@ public final class AsyncMeeting: Sendable {
     /// Suspends the caller until a second (peer) caller also suspends, after
     /// which both will resume.
     private func resumeWithPeer() async throws {
+        // Take the continuation by removing from state and returning it
+        // if present while under lock. Otherwise returns nil.
+        @Sendable func takeContinuation() -> CheckedContinuation<Void, any Error>? {
+            state.withLock { state in
+                if let continuation = state.continuation {
+                    state.continuation = nil
+                    return continuation
+                } else {
+                    return nil
+                }
+            }
+        }
+
         // Respond to cancellation
         try await withTaskCancellationHandler {
             // Create a continuation
             try await withCheckedThrowingContinuation { continuation in
-                // Aquire a lock on internal state
-                state.withLock { state in
-                    do {
-                        // Check that we haven't already been cancelled
-                        try Task.checkCancellation()
+                do {
+                    // Check that we haven't already been cancelled
+                    try Task.checkCancellation()
 
-                        // If we have a stored continuation, clear it and
-                        // resume both tasks. Else store the contination
-                        if let storedContinuation = state.continuation {
-                            state.continuation = nil
-                            storedContinuation.resume()
-                            continuation.resume()
-                        } else {
-                            state.continuation = continuation
-                        }
-                    } catch {
-                        // Report any errors (cancellation) to the caller
-                        continuation.resume(throwing: error)
+                    // If we have a stored continuation, resume both tasks.
+                    // Else store the continuation in state.
+                    if let storedContinuation = takeContinuation() {
+                        storedContinuation.resume()
+                        continuation.resume()
+                    } else {
+                        state.withLock { $0.continuation = continuation }
                     }
+                } catch {
+                    // Report any errors (cancellation) to the caller
+                    continuation.resume(throwing: error)
                 }
             }
         } onCancel: {
             // On cancellation aquire a lock on the state, if we have a
             // stored cancellation: clear it and propagate the cancellation
             // as an error
-            state.withLock { state in
-                if let continuation = state.continuation {
-                    state.continuation = nil
-                    continuation.resume(throwing: CancellationError())
-                }
-            }
+            takeContinuation()?.resume(throwing: CancellationError())
         }
     }
 }
